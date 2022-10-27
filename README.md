@@ -113,7 +113,7 @@ ssize_t file_list_merge(char ***destination, size_t n_dest,
     const char ***source, size_t n_source, enum FL_SORT_METHOD);
 ```
 
-Merges two file lists by appending a copy of <source> to <destination> and optionally sorting it.
+Merges two file lists by appending a copy of `source` to `destination` and optionally sorting it.
 Specifying the lists' sizes is faster but optional (0 meaning unspecified).
 On error, -1 is returned, errno is set to indicate the error, and the destination list remains unchanged.
 
