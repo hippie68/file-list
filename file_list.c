@@ -223,15 +223,12 @@ struct stat_stack
 {
     ssize_t top;         // Keeps track of the topmost array element.
     size_t size;         // The array's maximum size.
-    size_t n_allocated;  // Number of dynamically allocated array elements,
-                         // which start at 0.
     struct stat **array;
 };
 
-// Creates a new struct stat_stack, populating its array with pointers to
-// dynamically allocated stat buffers taken from <path>'s directories.
+// Creates a new struct stat_stack.
 // Returns -1 on error, otherwise 0.
-static int stat_stack_create(struct stat_stack *stack, const char *path)
+static int stat_stack_create(struct stat_stack *stack)
 {
     stack->array = malloc(STAT_STACK_INITIAL_SIZE * sizeof(struct stat *));
     if (stack->array == NULL)
@@ -239,59 +236,12 @@ static int stat_stack_create(struct stat_stack *stack, const char *path)
 
     stack->top = -1;
     stack->size = STAT_STACK_INITIAL_SIZE;
-    stack->n_allocated = 0;
-
-    char path_buffer[PATH_MAX];
-    path_buffer[PATH_MAX - 1] = '\0';
-    strncpy(path_buffer, path, sizeof(path_buffer));
-    if (path_buffer[PATH_MAX - 1] != '\0')
-    {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-
-    struct stat *sb;
-
-#define ADD_STAT(path_buffer)             \
-    do                                    \
-    {                                     \
-        sb = malloc(sizeof(struct stat)); \
-        if (sb == NULL)                   \
-            return -1;                    \
-        if (stat(path_buffer, sb) == -1)  \
-            return -1;                    \
-        stack->array[++stack->top] = sb;  \
-    }                                     \
-    while (0)
-
-    ADD_STAT(path_buffer);
-
-    while (1)
-    {
-        char *delim = strrchr(path_buffer, DIR_SEPARATOR);
-        if (delim == NULL)
-            break;
-        else if (delim == path_buffer)
-            path_buffer[1] = '\0';
-        else
-            *delim = '\0';
-
-        ADD_STAT(path_buffer);
-
-        if (path_buffer[1] == '\0')
-            break;
-    }
-
-#undef ADD_STAT
-
-    stack->n_allocated = stack->top + 1;
 
     return 0;
 }
 
-// Adds a new stat buffer to the stack. In contrast to the initial
-// values created by stat_array_create(), memory for new values is not
-// allocated. They are supposed to point to existing variables.
+// Adds a new stat buffer to the stack.
+// The values are supposed to point to existing variables.
 static int stat_stack_push(struct stat_stack *stack, struct stat *sb)
 {
     if ((size_t) (stack->top + 1) == stack->size)
@@ -308,8 +258,7 @@ static int stat_stack_push(struct stat_stack *stack, struct stat *sb)
     return 0;
 }
 
-// Removes a stat entry from the stack. It is supposed to only remove
-// non-allocated entries (i.e. not the first n_allocated ones).
+// Removes a stat entry from the stack.
 static void stat_stack_pop(struct stat_stack *stack)
 {
     stack->top--;
@@ -318,8 +267,6 @@ static void stat_stack_pop(struct stat_stack *stack)
 // Deallocates a stat stack's memory-allocated parts.
 static void stat_stack_destroy(struct stat_stack *stack)
 {
-    for (size_t i = 0; i < stack->n_allocated; i++)
-        free(stack->array[i]);
     free(stack->array);
 }
 
@@ -553,16 +500,21 @@ static int parse_file_tree(char ***file_list, size_t *n_file_list,
         // Traverse next directory.
         if (directory_depth && current_type == 4) // 4: DT_DIR
         {
+            // Ignore directory if following it would cause a loop. Don't add it
+            // to the file list.
+            if (is_directory_loop(stack, &sb))
+            {
+                DEBUG_PRINTF("Directory loop detected: \"%s\"\n", current_path);
+                free(current_path);
+                continue;
+            }
+
             // Ignore directory if it leads to a different device.
-            if (flags & FL_XDEV
-                && stack->array[stack->n_allocated - 1]->st_dev != sb.st_dev)
+            if (flags & FL_XDEV && stack->array[0]->st_dev != sb.st_dev)
             {
                 DEBUG_PRINTF("Ignoring other file system: \"%s\"\n",
                     current_path);
             }
-            // Ignore directory if following it would cause a loop.
-            else if (is_directory_loop(stack, &sb))
-                DEBUG_PRINTF("Directory loop detected: \"%s\"\n", current_path);
             else
             {
                 if (stat_stack_push(stack, &sb))
@@ -647,47 +599,6 @@ ssize_t file_list_create(char ***file_list, int file_type,
     size_t file_list_size = 0;
     size_t file_list_size_max = FL_INITIAL_LIST_SIZE;
 
-    // Compile regular expression.
-    regex_t regex;
-    if (regex_pattern)
-    {
-        int regex_flags = REG_NOSUB;
-        if (flags)
-        {
-            if (!(flags & FL_REGEX_BASIC))
-                regex_flags |= REG_EXTENDED;
-            if (!(flags & FL_REGEX_CASE))
-                regex_flags |= REG_ICASE;
-        }
-
-        if (regcomp(&regex, regex_pattern, regex_flags))
-        {
-            free(*file_list);
-            return -1;
-        }
-    }
-
-    // Strip superflous directory separators.
-    char *start_dir = create_clean_dir(dir);
-    if (start_dir == NULL)
-    {
-        free(*file_list);
-        if (regex_pattern)
-            regfree(&regex);
-        return -1;
-    }
-
-    // Populate initial stat stack, which is used for loop detection.
-    struct stat_stack stack;
-    if (stat_stack_create(&stack, start_dir))
-    {
-        stat_stack_destroy(&stack);
-        free(*file_list);
-        if (regex_pattern)
-            regfree(&regex);
-        return -1;
-    }
-
     // Create file type lookup array (its indexes are DT_ values from dirent.h).
     int file_type_arr[13] = { 0 };
     if (file_type == 0)
@@ -715,14 +626,66 @@ ssize_t file_list_create(char ***file_list, int file_type,
             file_type_arr[12] = 1;
     }
 
+    // Compile regular expression.
+    regex_t regex;
+    if (regex_pattern)
+    {
+        int regex_flags = REG_NOSUB;
+        if (flags)
+        {
+            if (!(flags & FL_REGEX_BASIC))
+                regex_flags |= REG_EXTENDED;
+            if (!(flags & FL_REGEX_CASE))
+                regex_flags |= REG_ICASE;
+        }
+
+        if (regcomp(&regex, regex_pattern, regex_flags))
+        {
+            free(*file_list);
+            return -1;
+        }
+    }
+
+    // Strip superfluous directory separators.
+    char *start_dir = create_clean_dir(dir);
+    if (start_dir == NULL)
+    {
+        free(*file_list);
+        if (regex_pattern)
+            regfree(&regex);
+        return -1;
+    }
+
+    // Set up initial stat stack, which is used for loop detection.
+    struct stat_stack stack;
+    if (stat_stack_create(&stack))
+    {
+        free(*file_list);
+        if(regex_pattern)
+            regfree(&regex);
+        free(start_dir);
+        return -1;
+    }
+    struct stat sb;
+    if (stat(dir, &sb))
+    {
+        free(*file_list);
+        if (regex_pattern)
+            regfree(&regex);
+        free(start_dir);
+        stat_stack_destroy(&stack);
+        return -1;
+    }
+    stat_stack_push(&stack, &sb);
+
     // Populate file list.
     int ret = parse_file_tree(file_list, &file_list_size, &file_list_size_max,
         file_type_arr, regex_pattern ? &regex : NULL, start_dir, depth, &stack,
         flags);
-    stat_stack_destroy(&stack);
     if (regex_pattern)
         regfree(&regex);
     free(start_dir);
+    stat_stack_destroy(&stack);
     if (ret && errno != E2BIG)
     {
         for (size_t i = 0; i < file_list_size; i++)
