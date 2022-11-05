@@ -82,7 +82,7 @@ Value             | Meaning
 ------------------|-------------------------------------------------------------
 `FL_FOLLOW_LINKS` | Follow symbolic links.
 `FL_DIR_SEP`      | Append a directory separator to directory file list items.
-`FL_REGEX_CASE`   | Enable case-sensitive regex matching.
+`FL_REGEX_CASE`   | Enable case-sensitive regular expression matching.
 `FL_REGEX_BASIC`  | Enable basic regular expressions (disabling extended RE).
 `FL_XDEV`         | Do not descend into directories that lead to other file systems.
 
@@ -92,7 +92,7 @@ Value             | Meaning
 ------------------|-------------------------------------------------------------
 `FL_SORT_NONE`    | Do not sort the file list.
 `FL_SORT_DEFAULT` | Sort by raw bytes, semi-case-insensitively (lowercase first, smaller strings first).
-`FL_SORT_NATURAL` | Same as `FL_SORT_DEFAULT`, but additionally sort numbers in natural sort order.
+`FL_SORT_NATURAL` | Same as `FL_SORT_DEFAULT`, but additionally sort numbers in [natural sort order](https://en.wikipedia.org/wiki/Natural_sort_order).
 `FL_SORT_COLLATE` | Sort with `strcoll()` to take into account the current C locale's `LC_COLLATE` setting. May improve sorting for other languages but can be comparably slow.
 `FL_SORT_ASCII`   | Sort with `strcmp()`, which means ASCIIbetical order and is the fastest sorting method.
 
